@@ -377,34 +377,67 @@ function renderDetail(id){
 window.delHolding=function(id,i){const ports=loadP();const p=ports.find(x=>x.id===id);if(!p)return;p.holdings.splice(i,1);saveP(ports);renderDetail(id);};
 window.delPort=function(id){if(!confirm("Delete this whole portfolio?"))return;let ports=loadP().filter(x=>x.id!==id);saveP(ports);renderPList();};
 
-/* add-stock screen */
-let addState={id:null,sel:null};
-window.openAdd=function(id){addState={id:id,sel:null};renderAdd('');showPort('add');setTimeout(()=>{var e=document.getElementById('asearch');if(e)e.focus();},60);};
-function renderAdd(q){
-  const el=document.getElementById('pAdd');
+/* add-stock screen — builds the shell once, then only refreshes results/footer
+   (so the search input is never recreated and typing stays continuous) */
+let addState={id:null,sel:null,mode:'shares'};
+window.openAdd=function(id){
+  addState={id:id,sel:null,mode:'shares'};
+  document.getElementById('pAdd').innerHTML=`
+    <div class="pbar"><button class="btn sec sm" onclick="renderDetail(addState.id)">&larr; Back</button><h2>Add a stock</h2></div>
+    <div class="search"><span class="ic">&#128269;</span><input id="asearch" placeholder="Search stock to add…"></div>
+    <div class="addres" id="ares"></div>
+    <div id="afoot"></div>`;
+  showPort('add');
+  const inp=document.getElementById('asearch');
+  inp.addEventListener('input',()=>updateResults(inp.value));   // only results rebuild
+  updateResults('');
+  setTimeout(()=>inp.focus(),60);
+};
+function updateResults(q){
   const ql=q.toLowerCase();
   const matches=(ql?ALL.filter(x=>x.n.toLowerCase().includes(ql)||x.t.toLowerCase().includes(ql)):ALL).slice(0,40);
-  const res=matches.map(x=>`<div class="ares ${addState.sel===x.t?'sel':''}" onclick="pickAdd('${x.t}')">
-      <div><div class="hn">${x.n}</div><div class="ap">${x.t}</div></div><div class="ap">${rup(x.l)}</div></div>`).join('')
-      || '<div class="empty">No match.</div>';
-  const sel=addState.sel?MAP[addState.sel]:null;
-  el.innerHTML=`
-    <div class="pbar"><button class="btn sec sm" onclick="renderDetail(addState.id)">&larr; Back</button><h2>Add a stock</h2></div>
-    <div class="search"><span class="ic">&#128269;</span><input id="asearch" placeholder="Search stock to add…" oninput="renderAdd(this.value)"></div>
-    <div class="addres">${res}</div>
-    ${sel?`<div style="border-top:1px solid var(--line);padding-top:12px">
-      <div class="field"><label>Selected: <b>${sel.n}</b> — buy price ${rup(sel.l)} (today)</label></div>
-      <div class="field"><label>How many shares?</label><input class="inp" id="aqty" type="number" min="1" value="10"></div>
-      <button class="btn" onclick="confirmAdd()">Add to portfolio</button></div>`:''}`;
-  // keep focus/value on the search box across re-renders
-  var s=document.getElementById('asearch'); if(s){s.value=q;}
+  document.getElementById('ares').innerHTML = matches.map(x=>
+    `<div class="ares ${addState.sel===x.t?'sel':''}" onclick="pickAdd('${x.t}')">
+      <div><div class="hn">${x.n}</div><div class="ap">${x.t}</div></div><div class="ap">${rup(x.l)}</div></div>`
+  ).join('') || '<div class="empty">No match.</div>';
+  renderFoot();
 }
-window.pickAdd=function(t){addState.sel=t;const q=document.getElementById('asearch').value;renderAdd(q);};
+window.pickAdd=function(t){ addState.sel=t; updateResults(document.getElementById('asearch').value); };
+window.setMode=function(m){ addState.mode=m; renderFoot(); };
+function renderFoot(){
+  const el=document.getElementById('afoot');
+  if(!addState.sel){ el.innerHTML=''; return; }
+  const m=MAP[addState.sel];
+  el.innerHTML=`<div style="border-top:1px solid var(--line);padding-top:12px;margin-top:4px">
+    <div class="field"><label>Selected: <b>${m.n}</b> — price ${rup(m.l)} (today)</label></div>
+    <div class="seg" style="margin-bottom:10px">
+      <button class="${addState.mode==='shares'?'on':''}" onclick="setMode('shares')">By shares</button>
+      <button class="${addState.mode==='amount'?'on':''}" onclick="setMode('amount')">By amount &#8377;</button>
+    </div>
+    ${addState.mode==='shares'
+      ? `<div class="field"><label>How many shares?</label><input class="inp" id="aqty" type="number" min="1" value="10" oninput="calc()"></div>`
+      : `<div class="field"><label>Amount to invest (&#8377;)</label><input class="inp" id="aamt" type="number" min="1" value="50000" oninput="calc()"></div>`}
+    <div id="acalc" style="font-family:var(--mono);font-size:12.5px;color:var(--dim);margin:-2px 0 10px"></div>
+    <button class="btn" onclick="confirmAdd()">Add to portfolio</button></div>`;
+  calc();
+}
+window.calc=function(){
+  const m=MAP[addState.sel]; if(!m)return; let qty,amt;
+  if(addState.mode==='shares'){
+    qty=Math.max(1,parseInt(document.getElementById('aqty').value)||0); amt=qty*m.l;
+    document.getElementById('acalc').innerHTML=`= ${rup(amt)} invested`;
+  } else {
+    const a=Math.max(0,parseFloat(document.getElementById('aamt').value)||0);
+    qty=Math.max(1,Math.round(a/m.l)); amt=qty*m.l;
+    document.getElementById('acalc').innerHTML=`&#8776; <b style="color:var(--text)">${qty} shares</b> (actual ${rup(amt)})`;
+  }
+};
 window.confirmAdd=function(){
-  const qty=Math.max(1,parseInt(document.getElementById('aqty').value)||1);
-  const t=addState.sel; if(!t)return; const m=MAP[t];
+  const m=MAP[addState.sel]; if(!m)return; let qty;
+  if(addState.mode==='shares') qty=Math.max(1,parseInt(document.getElementById('aqty').value)||1);
+  else{ const a=Math.max(0,parseFloat(document.getElementById('aamt').value)||0); qty=Math.max(1,Math.round(a/m.l)); }
   const ports=loadP(); const p=ports.find(x=>x.id===addState.id); if(!p)return;
-  p.holdings.push({t:t, qty:qty, entry:m.l, date:TODAY}); saveP(ports); renderDetail(addState.id);
+  p.holdings.push({t:addState.sel, qty:qty, entry:m.l, date:TODAY}); saveP(ports); renderDetail(addState.id);
 };
 
 /* ================= MODE SWITCH ================= */
