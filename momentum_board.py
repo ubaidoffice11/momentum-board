@@ -1,18 +1,19 @@
 """
-board.py — Momentum Board (leaderboard edition)
+momentum_board.py — Momentum Board (v2, polished + user-friendly)
 
-Live NSE momentum ranking. Reads universe.py (500 stocks + 38 ETFs), pulls prices
-from Yahoo, ranks by weekly / monthly / yearly return, and shows a clean
-leaderboard with rank badges and up/down arrows.
+Live NSE momentum ranking. Reads universe.py, pulls prices from Yahoo, and
+renders a fast, app-like leaderboard: search any stock, switch between
+This Week / This Month / This Year, tap a stock to see all three at once.
 
-Run locally:  py -3.13 -m streamlit run board.py
-Deploy:       push board.py + universe.py + requirements.txt to GitHub, then
-              connect the repo at share.streamlit.io.
+The whole interface is drawn inside a single HTML component so the styling
+applies reliably on Streamlit Cloud (injected CSS gets stripped otherwise).
 """
 
 import datetime as dt
+import json
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     import yfinance as yf
@@ -30,81 +31,14 @@ REFRESH_MINUTES = 5
 CHUNK = 50
 
 st.set_page_config(page_title="Momentum Board", page_icon="◆", layout="wide")
-
-# ---------------------------------------------------------------- styling
-st.markdown("""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-<style>
-  :root{
-    --bg:#0A0E0F; --panel:#121A1C; --panel2:#16201F; --line:#202B2D;
-    --text:#E4EBEB; --dim:#7E9092; --faint:#556264;
-    --up:#2FD07E; --up-bg:rgba(47,208,126,.12);
-    --down:#FF5A4D; --down-bg:rgba(255,90,77,.12);
-    --gold:#E8B34A; --mono:'JetBrains Mono',ui-monospace,monospace;
-  }
-  .stApp{background:var(--bg)}
-  html,body,[class*="css"]{font-family:'Sora',-apple-system,sans-serif}
-  #MainMenu,footer,header[data-testid="stHeader"]{display:none}
-  .block-container{padding-top:1.4rem;padding-bottom:3rem;max-width:1040px}
-
-  .hd{display:flex;align-items:center;gap:12px;margin-bottom:2px}
-  .diamond{width:26px;height:26px;transform:rotate(45deg);border-radius:6px;
-    background:linear-gradient(135deg,var(--gold),#9c7521);
-    box-shadow:0 0 20px -4px rgba(232,179,74,.6)}
-  .wm{font-weight:800;font-size:22px;letter-spacing:-.02em;color:var(--text)}
-  .wm span{color:var(--gold)}
-  .live{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);
-    font-size:11px;color:var(--up);margin-left:6px}
-  .live .dot{width:7px;height:7px;border-radius:50%;background:var(--up);
-    box-shadow:0 0 8px var(--up);animation:pulse 1.6s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  .sub{color:var(--dim);font-size:12.5px;font-family:var(--mono);margin:2px 0 18px}
-
-  /* streamlit widgets, toned to the theme */
-  .stRadio [role="radiogroup"]{gap:6px}
-  .stRadio label{color:var(--dim)!important;font-size:13px}
-  div[data-baseweb="input"]{background:var(--panel)!important;border-color:var(--line)!important}
-  .stTextInput input{color:var(--text)!important;font-family:var(--mono)!important}
-
-  /* leaderboard cards */
-  .lb{display:flex;flex-direction:column;gap:7px;margin-top:6px}
-  .card{display:grid;grid-template-columns:44px 1fr auto;align-items:center;gap:14px;
-    background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:12px 16px;transition:border-color .15s, transform .15s}
-  .card:hover{border-color:#33454a;transform:translateX(2px)}
-  .rank{font-family:var(--mono);font-weight:700;font-size:16px;color:var(--dim);
-    text-align:center;width:40px;height:34px;line-height:34px;border-radius:8px;
-    background:var(--panel2)}
-  .rank.top{color:#1a1206;background:linear-gradient(135deg,var(--gold),#c9922f)}
-  .nm{font-weight:600;font-size:15px;color:var(--text);line-height:1.2}
-  .tk{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:2px}
-  .right{display:flex;align-items:center;gap:16px}
-  .big{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-weight:700;
-    font-size:17px;min-width:118px;justify-content:flex-end}
-  .big.up{color:var(--up)} .big.down{color:var(--down)} .big.flat{color:var(--faint)}
-  .arrow{font-size:14px}
-  .others{display:flex;gap:14px;font-family:var(--mono);font-size:11px;color:var(--dim);
-    min-width:150px;justify-content:flex-end}
-  .others b{color:var(--text);font-weight:500}
-  .others .u{color:var(--up)} .others .d{color:var(--down)}
-  .ltp{font-family:var(--mono);font-size:12px;color:var(--dim);min-width:78px;text-align:right}
-
-  .note{color:var(--faint);font-size:11.5px;font-family:var(--mono);margin:14px 2px 0}
-  .foot{color:var(--faint);font-size:11px;margin-top:20px;text-align:center;
-    border-top:1px solid var(--line);padding-top:14px;line-height:1.6}
-  @media (max-width:680px){
-    .others{display:none}
-    .ltp{display:none}
-    .card{grid-template-columns:40px 1fr auto;padding:11px 13px}
-    .big{min-width:96px;font-size:16px}
-    .block-container{padding-left:.6rem;padding-right:.6rem}
-  }
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    "<style>.block-container{padding:0!important;max-width:100%!important}"
+    "header[data-testid='stHeader']{display:none}"
+    "#MainMenu,footer{display:none}.stApp{background:#0B0F12}</style>",
+    unsafe_allow_html=True)
 
 
-# ---------------------------------------------------------------- data
+# ------------------------------------------------------------------ data
 def _returns(close):
     close = close.dropna()
     if close.empty:
@@ -115,13 +49,14 @@ def _returns(close):
         return float(s.iloc[-1]) if len(s) else None
     def pct(b):
         return None if not b else round((cur / b - 1) * 100, 2)
-    return {"LTP": round(cur, 2), "1W": pct(ref(7)), "1M": pct(ref(30)), "1Y": pct(ref(365))}
+    return {"l": round(cur, 2), "w": pct(ref(7)), "m": pct(ref(30)), "y": pct(ref(365))}
 
 @st.cache_data(ttl=REFRESH_MINUTES * 60, show_spinner=False)
-def fetch(name_to_ticker):
+def fetch(pairs):
+    """pairs: tuple of (name, yahoo_ticker). Returns list of dict rows."""
     if yf is None:
-        return pd.DataFrame()
-    tickers = list(name_to_ticker.values())
+        return []
+    tickers = [t for _, t in pairs]
     closes = {}
     for i in range(0, len(tickers), CHUNK):
         batch = tickers[i:i + CHUNK]
@@ -136,98 +71,224 @@ def fetch(name_to_ticker):
             except Exception:
                 pass
     rows = []
-    for name, tk in name_to_ticker.items():
+    for name, tk in pairs:
         r = _returns(closes[tk]) if tk in closes else None
-        if r and r["1W"] is not None:
-            rows.append({"Name": name, "Ticker": tk.replace(".NS", ""), **r})
-    return pd.DataFrame(rows)
-
-def rank(df):
-    for c in ["1W", "1M", "1Y"]:
-        df[c + "R"] = df[c].rank(ascending=False, method="min").astype("Int64")
-    return df
+        if r and r["w"] is not None:
+            rows.append({"n": name.replace(" Ltd.", "").replace(" Limited", ""),
+                         "t": tk.replace(".NS", ""), **r})
+    return rows
 
 
-# ---------------------------------------------------------------- header
-st.markdown(
-    '<div class="hd"><div class="diamond"></div>'
-    '<div class="wm">Momentum <span>Board</span></div>'
-    '<span class="live"><span class="dot"></span>LIVE</span></div>'
-    f'<div class="sub">NSE momentum · ranked by return · updated {dt.datetime.now():%H:%M} IST</div>',
-    unsafe_allow_html=True)
+stock_pairs = tuple((n, m["yahoo"]) for n, m in STOCKS.items())
+etf_pairs = tuple((n, m["yahoo"]) for n, m in INDICES.items())
 
-if yf is None:
-    st.error("yfinance isn't installed. Run:  py -3.13 -m pip install yfinance")
+with st.spinner("Loading live prices — first load takes a minute…"):
+    stocks = fetch(stock_pairs)
+    etfs = fetch(etf_pairs)
+
+if not stocks and not etfs:
+    st.error("Couldn't load prices right now (the data source may be busy). "
+             "Refresh in a minute.")
     st.stop()
 
-c1, c2, c3 = st.columns([2, 2, 1.4])
-with c1:
-    horizon = st.radio("Rank by", ["Weekly", "Monthly", "Yearly"], horizontal=True, index=0,
-                       label_visibility="collapsed")
-with c2:
-    query = st.text_input("Search", placeholder="search name or ticker…",
-                          label_visibility="collapsed")
-with c3:
-    topn = st.selectbox("Show", ["Top 25", "Top 50", "Top 100", "All"], label_visibility="collapsed")
+ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+DATA = {
+    "stocks": stocks, "etfs": etfs,
+    "stocksTotal": len(STOCKS), "etfsTotal": len(INDICES),
+    "updated": ist.strftime("%d %b, %H:%M"),
+}
 
-HKEY = {"Weekly": "1W", "Monthly": "1M", "Yearly": "1Y"}[horizon]
-LIMIT = {"Top 25": 25, "Top 50": 50, "Top 100": 100, "All": 10_000}[topn]
+# ------------------------------------------------------------------ UI
+TEMPLATE = r"""
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0F12; --card:#141A1F; --card2:#182028; --line:#232D34;
+    --text:#EAF0F0; --dim:#8A9BA0; --faint:#5A6A70;
+    --up:#2FCE7C; --up-bg:rgba(47,206,124,.13);
+    --down:#FF5C57; --down-bg:rgba(255,92,87,.13);
+    --gold:#F0B54A; --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Sora',-apple-system,sans-serif;background:var(--bg);color:var(--text);
+    -webkit-font-smoothing:antialiased}
+  .app{display:flex;flex-direction:column;height:860px;max-width:820px;margin:0 auto;padding:0 14px}
 
+  .hd{display:flex;align-items:center;gap:11px;padding:16px 2px 12px}
+  .dia{width:24px;height:24px;transform:rotate(45deg);border-radius:6px;flex-shrink:0;
+    background:linear-gradient(135deg,var(--gold),#a9781f);box-shadow:0 0 18px -3px rgba(240,181,74,.55)}
+  .ttl{font-weight:800;font-size:20px;letter-spacing:-.02em}
+  .ttl b{color:var(--gold);font-weight:800}
+  .live{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;color:var(--up)}
+  .live i{width:6px;height:6px;border-radius:50%;background:var(--up);box-shadow:0 0 7px var(--up);animation:pl 1.6s infinite}
+  @keyframes pl{0%,100%{opacity:1}50%{opacity:.3}}
+  .upd{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .lede{font-size:13px;color:var(--dim);padding:0 2px 14px;line-height:1.5}
 
-def leaderboard(universe, total):
-    name_to_tk = {n: m["yahoo"] for n, m in universe.items()}
-    with st.spinner(f"Pulling {len(name_to_tk)} live prices…"):
-        df = fetch(name_to_tk)
-    if df.empty:
-        st.warning("No data came back. If this is hosted, Yahoo may be rate-limiting — retry in a minute.")
-        return
-    got = len(df)
-    df = rank(df)
-    if query:
-        m = df["Name"].str.contains(query, case=False) | df["Ticker"].str.contains(query, case=False)
-        df = df[m]
-    df = df.sort_values(HKEY + "R").head(LIMIT)
+  .tabs{display:flex;gap:8px;margin-bottom:10px}
+  .tab{flex:1;text-align:center;padding:11px;border-radius:11px;background:var(--card);
+    border:1px solid var(--line);color:var(--dim);font-weight:600;font-size:14px;cursor:pointer;
+    transition:.14s;user-select:none}
+  .tab.on{background:var(--text);color:#0B0F12;border-color:var(--text)}
+  .tab .c{font-family:var(--mono);font-size:11px;opacity:.6;margin-left:4px}
 
-    def chip(v, label):
-        if v is None:
-            return f'<span>{label} —</span>'
-        cls = "u" if v >= 0 else "d"
-        return f'<span>{label} <b class="{cls}">{v:+.1f}%</b></span>'
+  .seg{display:flex;gap:5px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:10px}
+  .seg button{flex:1;padding:9px;border:0;border-radius:8px;background:transparent;color:var(--dim);
+    font-family:'Sora';font-weight:600;font-size:13px;cursor:pointer;transition:.14s}
+  .seg button.on{background:var(--gold);color:#221704}
 
-    cards = []
-    for _, r in df.iterrows():
-        rk = int(r[HKEY + "R"])
-        sel = r[HKEY]
-        if sel is None:
-            big = '<div class="big flat"><span class="arrow">·</span>—</div>'
-        elif sel >= 0:
-            big = f'<div class="big up"><span class="arrow">▲</span>+{sel:.2f}%</div>'
-        else:
-            big = f'<div class="big down"><span class="arrow">▼</span>{sel:.2f}%</div>'
-        others = [h for h in ["1W", "1M", "1Y"] if h != HKEY]
-        others_html = "".join(chip(r[h], h) for h in others)
-        cards.append(
-            f'<div class="card">'
-            f'<div class="rank {"top" if rk<=3 else ""}">{rk}</div>'
-            f'<div><div class="nm">{r["Name"].replace(" Ltd.","")}</div>'
-            f'<div class="tk">{r["Ticker"]}</div></div>'
-            f'<div class="right">{big}'
-            f'<div class="others">{others_html}</div>'
-            f'<div class="ltp">₹{r["LTP"]:,.2f}</div></div>'
-            f'</div>')
-    st.markdown(f'<div class="lb">{"".join(cards)}</div>', unsafe_allow_html=True)
-    shown = len(df)
-    miss = total - got
-    st.markdown(f'<div class="note">Showing {shown} of {got} tracked · '
-                f'{"all symbols live" if miss<=0 else f"{miss} not on Yahoo"}</div>',
-                unsafe_allow_html=True)
+  .search{position:relative;margin-bottom:12px}
+  .search input{width:100%;padding:12px 14px 12px 40px;border-radius:11px;border:1px solid var(--line);
+    background:var(--card);color:var(--text);font-family:'Sora';font-size:14px;outline:none;transition:.14s}
+  .search input:focus{border-color:var(--gold)}
+  .search input::placeholder{color:var(--faint)}
+  .search .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--faint);font-size:15px}
 
+  .meta{display:flex;justify-content:space-between;align-items:center;padding:0 4px 8px;
+    font-size:11.5px;color:var(--faint);font-family:var(--mono)}
+  .meta .dir{color:var(--dim);cursor:pointer;user-select:none}
+  .meta .dir:hover{color:var(--text)}
 
-tab1, tab2 = st.tabs([f"Stocks · {len(STOCKS)}", f"Indices & ETFs · {len(INDICES)}"])
-with tab1:
-    leaderboard(STOCKS, len(STOCKS))
-with tab2:
-    leaderboard(INDICES, len(INDICES))
+  .list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:7px;padding:2px 2px 20px;
+    scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  .list::-webkit-scrollbar{width:8px}.list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 
-st.markdown('<div class="foot">Momentum data for tracking only — not investment advice. '
-            'Prices via Yahoo, ~15-min delayed.</div>', unsafe_allow_html=True)
+  .row{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 15px;
+    cursor:pointer;transition:.14s}
+  .row:hover{border-color:#33424a;background:var(--card2)}
+  .top{display:grid;grid-template-columns:38px 1fr auto;align-items:center;gap:13px}
+  .rk{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--dim);text-align:center;
+    height:32px;line-height:32px;border-radius:9px;background:var(--card2)}
+  .rk.g1{color:#221704;background:linear-gradient(135deg,var(--gold),#c9922f)}
+  .rk.g2{color:#221704;background:linear-gradient(135deg,#d9dde0,#a7aeb2)}
+  .rk.g3{color:#221704;background:linear-gradient(135deg,#e0a878,#b47a49)}
+  .nm{font-weight:600;font-size:15px;line-height:1.25}
+  .tk{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px}
+  .big{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-weight:700;font-size:16px;
+    padding:5px 10px;border-radius:9px;white-space:nowrap}
+  .big.up{color:var(--up);background:var(--up-bg)}
+  .big.down{color:var(--down);background:var(--down-bg)}
+  .big.flat{color:var(--faint);background:var(--card2)}
+
+  .det{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);
+    grid-template-columns:repeat(4,1fr);gap:8px}
+  .row.open .det{display:grid}
+  .det .box{text-align:center}
+  .det .k{font-size:10px;color:var(--faint);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+  .det .v{font-family:var(--mono);font-weight:500;font-size:13px}
+  .det .v.up{color:var(--up)}.det .v.down{color:var(--down)}.det .v.flat{color:var(--faint)}
+
+  .empty{text-align:center;color:var(--dim);padding:50px 20px;font-size:14px}
+  .foot{text-align:center;font-size:10.5px;color:var(--faint);padding:6px 0 2px;font-family:var(--mono)}
+
+  @media (max-width:560px){
+    .app{height:100vh;padding:0 11px}
+    .ttl{font-size:18px}.upd{display:none}
+  }
+</style></head>
+<body>
+<div class="app">
+  <div class="hd">
+    <div class="dia"></div>
+    <div class="ttl">Momentum <b>Board</b></div>
+    <span class="live"><i></i>LIVE</span>
+    <span class="upd">updated __UPDATED__ IST</span>
+  </div>
+  <div class="lede">See which stocks are moving up or down, ranked live. Pick a time period, or search for any name.</div>
+
+  <div class="tabs">
+    <div class="tab on" data-tab="stocks">Stocks <span class="c" id="cStocks"></span></div>
+    <div class="tab" data-tab="etfs">Index / ETFs <span class="c" id="cEtfs"></span></div>
+  </div>
+
+  <div class="seg" id="seg">
+    <button data-p="w" class="on">This Week</button>
+    <button data-p="m">This Month</button>
+    <button data-p="y">This Year</button>
+  </div>
+
+  <div class="search">
+    <span class="ic">&#128269;</span>
+    <input id="q" placeholder="Search a stock…  e.g. Reliance, HDFC, Tata">
+  </div>
+
+  <div class="meta">
+    <span>#1 = strongest &middot; tap any stock for all periods</span>
+    <span class="dir" id="dir">Top gainers &#9660;</span>
+  </div>
+
+  <div class="list" id="list"></div>
+  <div class="foot">Momentum data for tracking only — not investment advice &middot; prices ~15&nbsp;min delayed</div>
+</div>
+
+<script>
+const DATA = __DATA__;
+document.getElementById('cStocks').textContent = DATA.stocks.length;
+document.getElementById('cEtfs').textContent = DATA.etfs.length;
+const PLABEL = {w:"This week", m:"This month", y:"This year"};
+let state = {tab:'stocks', period:'w', query:'', dir:'desc'};
+
+function cls(v){ return v==null ? 'flat' : (v>=0 ? 'up':'down'); }
+function fmt(v){ if(v==null) return '—'; return (v>=0?'+':'')+v.toFixed(2)+'%'; }
+function arrow(v){ return v==null?'&middot;':(v>=0?'&#9650;':'&#9660;'); }
+
+function render(){
+  const p = state.period;
+  let rows = DATA[state.tab].slice();
+  const valued = rows.filter(x=>x[p]!=null).sort((a,b)=> state.dir==='desc'? b[p]-a[p] : a[p]-b[p]);
+  const nulls  = rows.filter(x=>x[p]==null);
+  valued.forEach((x,i)=> x._rk=i+1); nulls.forEach(x=> x._rk=null);
+  let all = valued.concat(nulls);
+
+  if(state.query){
+    const q = state.query.toLowerCase();
+    all = all.filter(x=> x.n.toLowerCase().includes(q) || x.t.toLowerCase().includes(q));
+  }
+
+  const el = document.getElementById('list');
+  if(all.length===0){ el.innerHTML = '<div class="empty">No stock found. Try another name.</div>'; return; }
+
+  el.innerHTML = all.map(x=>{
+    const v = x[p];
+    const rkClass = x._rk===1?'g1':x._rk===2?'g2':x._rk===3?'g3':'';
+    const rk = x._rk==null?'&ndash;':x._rk;
+    const det = ['w','m','y'].map(k=>
+      `<div class="box"><div class="k">${PLABEL[k].replace('This ','')}</div>`+
+      `<div class="v ${cls(x[k])}">${fmt(x[k])}</div></div>`).join('')
+      + `<div class="box"><div class="k">Price</div><div class="v">&#8377;${x.l.toLocaleString('en-IN')}</div></div>`;
+    return `<div class="row" onclick="this.classList.toggle('open')">
+      <div class="top">
+        <div class="rk ${rkClass}">${rk}</div>
+        <div><div class="nm">${x.n}</div><div class="tk">${x.t}</div></div>
+        <div class="big ${cls(v)}">${arrow(v)} ${fmt(v)}</div>
+      </div>
+      <div class="det">${det}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('list').scrollTop = 0;
+}
+
+document.querySelectorAll('.tab').forEach(t=> t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on'); state.tab=t.dataset.tab; render();
+});
+document.querySelectorAll('#seg button').forEach(b=> b.onclick=()=>{
+  document.querySelectorAll('#seg button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); state.period=b.dataset.p; render();
+});
+document.getElementById('q').addEventListener('input', e=>{ state.query=e.target.value.trim(); render(); });
+document.getElementById('dir').onclick = function(){
+  state.dir = state.dir==='desc'?'asc':'desc';
+  this.innerHTML = state.dir==='desc' ? 'Top gainers &#9660;' : 'Top losers &#9650;';
+  render();
+};
+render();
+</script>
+</body></html>
+"""
+
+html = TEMPLATE.replace("__DATA__", json.dumps(DATA)).replace("__UPDATED__", DATA["updated"])
+components.html(html, height=880, scrolling=False)
