@@ -52,14 +52,11 @@ def _returns(close):
         return None if not b else round((cur / b - 1) * 100, 2)
     return {"l": round(cur, 2), "w": pct(ref(7)), "m": pct(ref(30)), "y": pct(ref(365))}
 
-@st.cache_data(ttl=REFRESH_MINUTES * 60, show_spinner=False)
-def fetch(pairs):
-    if yf is None:
-        return []
-    tickers = [t for _, t in pairs]
-    closes = {}
-    for i in range(0, len(tickers), CHUNK):
-        batch = tickers[i:i + CHUNK]
+def _grab(tickers, chunk):
+    """Download 1y close series for tickers -> {ticker: series}."""
+    out = {}
+    for i in range(0, len(tickers), chunk):
+        batch = tickers[i:i + chunk]
         try:
             raw = yf.download(batch, period="1y", interval="1d", auto_adjust=True,
                               progress=False, threads=True, group_by="ticker")
@@ -67,9 +64,27 @@ def fetch(pairs):
             continue
         for tk in batch:
             try:
-                closes[tk] = raw[tk]["Close"] if len(batch) > 1 else raw["Close"]
+                s = raw[tk]["Close"] if len(batch) > 1 else raw["Close"]
+                if s.dropna().shape[0] > 0:
+                    out[tk] = s
             except Exception:
                 pass
+    return out
+
+@st.cache_data(ttl=REFRESH_MINUTES * 60, show_spinner=False)
+def fetch(pairs):
+    if yf is None:
+        return []
+    import time
+    tickers = [t for _, t in pairs]
+    closes = _grab(tickers, CHUNK)
+    # retry whatever Yahoo dropped — usually transient. Two smaller-batch passes.
+    for _ in range(2):
+        missing = [t for t in tickers if t not in closes]
+        if not missing:
+            break
+        time.sleep(1)
+        closes.update(_grab(missing, 20))
     rows = []
     for name, tk in pairs:
         r = _returns(closes[tk]) if tk in closes else None
